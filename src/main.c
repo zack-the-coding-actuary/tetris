@@ -1,4 +1,5 @@
 #include "raylib.h"
+#include "raymath.h"
 #include <stdio.h>
 
 typedef enum {
@@ -12,12 +13,31 @@ typedef enum {
     YELLOW_S
 } Tetromino;
 
+typedef enum {
+    ROTATE,
+    LEFT,
+    RIGHT,
+    DOWN
+} Move;
+
+typedef struct {
+    Tetromino  type; // need to add one to get back to proper enum
+    Texture2D *texture;
+} Block_Data;
+
+// Where 0, 0 is top-left corner, 4 units per block type, 4 configs per block
+typedef Vector2 Orientation[4][4];
+
 // Configs
 const int screenWidth = 720;
 const int screenHeight = 800;
 const int fps = 30;
 
 const int block_size = 32; // do not change unless changing sprites
+
+const Vector2 vecL = (Vector2){-block_size, 0};
+const Vector2 vecR = (Vector2){block_size, 0};
+const Vector2 vecD = (Vector2){0, block_size};
 
 const int left_box = 60;
 const int right_box = 380;
@@ -26,10 +46,12 @@ const int bot_box = 700;
 
 const char* title = "TETRIS";
 char score_label[32];
+// char debug_label[48];
 
 // Game state
 unsigned score = 0;
 Texture2D blocks[7][5]; // 7 blocks with 4 rotations + single unit
+Orientation block_locs[7]; // 7 blocks, 4 orientations, 2 x/y coords
 int rotation = 0; // 0-3
 bool get_next = true;
 
@@ -39,24 +61,31 @@ const int move_frames = 20;
 
 // Game area is 20 deep, 10 across. Bottom is i = 0.
 Tetromino spaces[20][10] = {0};
-Texture2D curr;
+Block_Data curr;
+Vector2 curr_loc;
+int coords[4][2];
 Tetromino next = 0;
 const Vector2 spawn_loc = {(right_box + left_box) / 2 - block_size, top_box - block_size};
-Vector2 curr_loc;
 
 // Forward declarations
 void MakeGUI();
 void InitBlockTextures();
+void InitBlockLocs();
 void PickNextBlock();
 void CheckSpawnNextBlock();
 void DrawCurrent();
+void DrawExisting();
+void CheckDestroyRows();
 void KeyPressCheck();
 void ConsiderMove();
+bool CheckCollision(Vector2 proposed, int new_rotation);
+void PixelsToCoords(Vector2 current, Vector2 *unit_offsets);
 
 int main(void) {
     InitWindow(screenWidth, screenHeight, "Tetris");
     SetTargetFPS(fps);
     InitBlockTextures();
+    InitBlockLocs();
     PickNextBlock();
 
     while (!WindowShouldClose()) {
@@ -69,11 +98,15 @@ int main(void) {
             ClearBackground(BLACK);
             MakeGUI();
             DrawCurrent();
+            DrawExisting();
 
         EndDrawing();
 
-        ConsiderMove();
+        // Frame counter mechanics / auto move down
+        if (frame_count == move_frames) ConsiderMove(DOWN); // Change this to be specific to moving down
         frame_count++;
+
+        CheckDestroyRows();
     }
 
     CloseWindow();
@@ -85,9 +118,11 @@ void PickNextBlock() {
 }
 
 void CheckSpawnNextBlock() {
+    // TODO: Add collision logic (i.e. game over)
     if (get_next) {
         rotation = 0;
-        curr = blocks[next][rotation];
+        curr.texture = &blocks[next][rotation];
+        curr.type = next;
         curr_loc = spawn_loc;
         PickNextBlock();
         get_next = false;
@@ -95,33 +130,154 @@ void CheckSpawnNextBlock() {
 }
 
 void DrawCurrent() {
-    curr = blocks[next][rotation];
-    DrawTexture(curr, curr_loc.x, curr_loc.y, WHITE);
+    curr.texture = &blocks[curr.type][rotation];
+    DrawTexture(*(curr.texture), curr_loc.x, curr_loc.y, WHITE);
+}
+
+void DrawExisting() {
+    for (int i = 0; i < 20; ++i) {
+        for (int j = 0; j < 10; ++j) {
+            switch (spaces[i][j]) {
+                case BLUE_T:
+                    DrawTexture(blocks[0][4], left_box + block_size * j, bot_box - (i + 1) * block_size, WHITE);
+                    break;
+                case CYAN_Z:
+                    DrawTexture(blocks[1][4], left_box + block_size * j, bot_box - (i + 1) * block_size, WHITE);
+                    break;
+                case GREEN_L:
+                    DrawTexture(blocks[2][4], left_box + block_size * j, bot_box - (i + 1) * block_size, WHITE);
+                    break;
+                case PINK_J:
+                    DrawTexture(blocks[3][4], left_box + block_size * j, bot_box - (i + 1) * block_size, WHITE);
+                    break;
+                case PURPLE_I:
+                    DrawTexture(blocks[4][4], left_box + block_size * j, bot_box - (i + 1) * block_size, WHITE);
+                    break;
+                case RED_O:
+                    DrawTexture(blocks[5][4], left_box + block_size * j, bot_box - (i + 1) * block_size, WHITE);
+                    break;
+                case YELLOW_S:
+                    DrawTexture(blocks[6][4], left_box + block_size * j, bot_box - (i + 1) * block_size, WHITE);
+                    break;
+            }
+        }
+    }
+}
+
+void CheckDestroyRows() {
+    bool populated = true;
+    for (int i = 0; i < 20; ++i) {
+        for (int j = 0; j < 10; ++j) {
+            if (!spaces[i][j]) {
+                populated = false;
+                break;
+            }
+        }
+        if (populated) {
+            score++;
+            for (int k = 0; k < 10; ++k) {
+                spaces[i][k] = NONE;
+                BeginDrawing();
+                    ClearBackground(BLACK);
+                    MakeGUI();
+                    DrawExisting();
+                EndDrawing();
+                WaitTime(0.05);
+            }
+            for (int l = i; l < 19; ++l) {
+                for (int m = 0; m < 10; ++m) {
+                    spaces[l][m] = spaces[l + 1][m];
+                }
+                BeginDrawing();
+                    ClearBackground(BLACK);
+                    MakeGUI();
+                    DrawExisting();
+                EndDrawing();
+                WaitTime(0.05);
+            }
+            i--;
+        }
+        populated = true;
+    }
 }
 
 void KeyPressCheck() {
-    // TODO: Add collision logic
     if (IsKeyPressed(KEY_LEFT)) {
-        curr_loc.x -= 32;
+        ConsiderMove(LEFT);
     }
     if (IsKeyPressed(KEY_RIGHT)) {
-        curr_loc.x += 32;
+        ConsiderMove(RIGHT);
     }
     if (IsKeyPressed(KEY_DOWN)) {
-        curr_loc.y += 32;
-        frame_count = 0;
+        ConsiderMove(DOWN);
     }
     if (IsKeyPressed(KEY_UP)) {
-        rotation = (rotation + 1) % 4;
+        ConsiderMove(ROTATE);
+    }
+    if (IsKeyDown(KEY_SPACE)) {
+        ConsiderMove(DOWN);
     }
 }
 
-void ConsiderMove() {
+void ConsiderMove(Move move) {
 
     // TODO: Add collision logic
-    if (frame_count == move_frames) {
-        curr_loc.y += block_size;
-        frame_count = 0;
+    switch (move) {
+        case LEFT:
+            if (CheckCollision(Vector2Add(curr_loc, vecL), rotation)) {
+                curr_loc.x -= block_size;
+            }
+            break;
+        case RIGHT:
+            if (CheckCollision(Vector2Add(curr_loc, vecR), rotation)) {
+                curr_loc.x += block_size;
+            }
+            break;
+        case DOWN:
+        if (CheckCollision(Vector2Add(curr_loc, vecD), rotation)) {
+            curr_loc.y += block_size;
+            frame_count = 0;
+        }
+        else {
+            PixelsToCoords(curr_loc, block_locs[curr.type][rotation]);
+            for (int i = 0; i < 4; ++i) {
+                spaces[coords[i][1]][coords[i][0]] = curr.type + 1;
+            }
+            frame_count = 0;
+            get_next = true;
+        }
+        break;
+        case ROTATE:
+            if (CheckCollision(curr_loc, (rotation + 1) % 4)) {
+                rotation = (rotation + 1) % 4;
+            }
+            break;
+    }
+}
+
+bool CheckCollision(Vector2 proposed, int new_rotation) {
+    // Length 4
+    PixelsToCoords(proposed, block_locs[curr.type][new_rotation]);
+
+    for (int i = 0; i < 4; ++i) {
+        if (coords[i][0] < 0   ||
+            coords[i][0] >= 10 ||
+            coords[i][1] < 0   ||
+            spaces[coords[i][1]][coords[i][0]] > 0
+        ) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void PixelsToCoords(Vector2 current, Vector2 *unit_offsets) {
+    // Convert to coords relevant to "spaces"
+    for (int i = 0; i < 4; ++i) {
+        float px = current.x + unit_offsets[i].x * block_size;
+        float py = current.y + unit_offsets[i].y * block_size;
+        coords[i][0] = (int)(px - left_box) / block_size;
+        coords[i][1] = (int)(py - 668) / -block_size;
     }
 }
 
@@ -139,6 +295,22 @@ void MakeGUI() {
     // Next block indicator
     DrawText("Next block:", 420, 320, 20, RAYWHITE);
     DrawTexture(blocks[next][0], 420, 400, WHITE);
+
+    // Debug: active block's 4 occupied grid cells, bottom-right of the play area
+    // Vector2 *shape = block_locs[curr.type][rotation];
+    // int cell_coords[4][2];
+    // for (int i = 0; i < 4; i++) {
+    //     float px = curr_loc.x + shape[i].x * block_size;
+    //     float py = curr_loc.y + shape[i].y * block_size;
+    //     cell_coords[i][0] = (int)(px - left_box) / block_size;
+    //     cell_coords[i][1] = (int)(py - (bot_box - block_size)) / -block_size;
+    // }
+    // snprintf(debug_label, 48, "(%d,%d)(%d,%d)(%d,%d)(%d,%d)",
+    //     cell_coords[0][0], cell_coords[0][1],
+    //     cell_coords[1][0], cell_coords[1][1],
+    //     cell_coords[2][0], cell_coords[2][1],
+    //     cell_coords[3][0], cell_coords[3][1]);
+    // DrawText(debug_label, right_box - MeasureText(debug_label, 16) - 4, bot_box - 20, 16, GRAY);
 }
 
 void InitBlockTextures() {
@@ -191,4 +363,165 @@ void InitBlockTextures() {
     blocks[6][2] = LoadTexture("blocks/yellow_block/yellow_S3.png");
     blocks[6][3] = LoadTexture("blocks/yellow_block/yellow_S4.png");
     blocks[6][4] = LoadTexture("blocks/yellow_block/yellow_block.png");
+}
+
+void InitBlockLocs() {
+
+    // Blue T
+    // T1
+    block_locs[0][0][0] = (Vector2){1, 0};
+    block_locs[0][0][1] = (Vector2){0, 1};
+    block_locs[0][0][2] = (Vector2){1, 1};
+    block_locs[0][0][3] = (Vector2){2, 1};
+
+    // T2
+    block_locs[0][1][0] = (Vector2){1, 0};
+    block_locs[0][1][1] = (Vector2){1, 1};
+    block_locs[0][1][2] = (Vector2){2, 1};
+    block_locs[0][1][3] = (Vector2){1, 2};
+
+    // T3
+    block_locs[0][2][0] = (Vector2){0, 1};
+    block_locs[0][2][1] = (Vector2){1, 1};
+    block_locs[0][2][2] = (Vector2){2, 1};
+    block_locs[0][2][3] = (Vector2){1, 2};
+
+    // T4
+    block_locs[0][3][0] = (Vector2){1, 0};
+    block_locs[0][3][1] = (Vector2){0, 1};
+    block_locs[0][3][2] = (Vector2){1, 1};
+    block_locs[0][3][3] = (Vector2){1, 2};
+
+    // Cyan Z
+    // Z1
+    block_locs[1][0][0] = (Vector2){0, 0};
+    block_locs[1][0][1] = (Vector2){1, 0};
+    block_locs[1][0][2] = (Vector2){1, 1};
+    block_locs[1][0][3] = (Vector2){2, 1};
+
+    // Z2
+    block_locs[1][1][0] = (Vector2){2, 0};
+    block_locs[1][1][1] = (Vector2){1, 1};
+    block_locs[1][1][2] = (Vector2){2, 1};
+    block_locs[1][1][3] = (Vector2){1, 2};
+
+    // Z3
+    block_locs[1][2][0] = (Vector2){0, 1};
+    block_locs[1][2][1] = (Vector2){1, 1};
+    block_locs[1][2][2] = (Vector2){1, 2};
+    block_locs[1][2][3] = (Vector2){2, 2};
+
+    // Z4
+    block_locs[1][3][0] = (Vector2){1, 0};
+    block_locs[1][3][1] = (Vector2){0, 1};
+    block_locs[1][3][2] = (Vector2){1, 1};
+    block_locs[1][3][3] = (Vector2){0, 2};
+
+    // Green L
+    // L1
+    block_locs[2][0][0] = (Vector2){2, 0};
+    block_locs[2][0][1] = (Vector2){0, 1};
+    block_locs[2][0][2] = (Vector2){1, 1};
+    block_locs[2][0][3] = (Vector2){2, 1};
+
+    // L2
+    block_locs[2][1][0] = (Vector2){1, 0};
+    block_locs[2][1][1] = (Vector2){1, 1};
+    block_locs[2][1][2] = (Vector2){1, 2};
+    block_locs[2][1][3] = (Vector2){2, 2};
+
+    // L3
+    block_locs[2][2][0] = (Vector2){0, 1};
+    block_locs[2][2][1] = (Vector2){1, 1};
+    block_locs[2][2][2] = (Vector2){2, 1};
+    block_locs[2][2][3] = (Vector2){0, 2};
+
+    // L4
+    block_locs[2][3][0] = (Vector2){0, 0};
+    block_locs[2][3][1] = (Vector2){1, 0};
+    block_locs[2][3][2] = (Vector2){1, 1};
+    block_locs[2][3][3] = (Vector2){1, 2};
+
+    // Pink J
+    // J1
+    block_locs[3][0][0] = (Vector2){0, 0};
+    block_locs[3][0][1] = (Vector2){0, 1};
+    block_locs[3][0][2] = (Vector2){1, 1};
+    block_locs[3][0][3] = (Vector2){2, 1};
+
+    // J2
+    block_locs[3][1][0] = (Vector2){1, 0};
+    block_locs[3][1][1] = (Vector2){2, 0};
+    block_locs[3][1][2] = (Vector2){1, 1};
+    block_locs[3][1][3] = (Vector2){1, 2};
+
+    // J3
+    block_locs[3][2][0] = (Vector2){0, 1};
+    block_locs[3][2][1] = (Vector2){1, 1};
+    block_locs[3][2][2] = (Vector2){2, 1};
+    block_locs[3][2][3] = (Vector2){2, 2};
+
+    // J4
+    block_locs[3][3][0] = (Vector2){1, 0};
+    block_locs[3][3][1] = (Vector2){1, 1};
+    block_locs[3][3][2] = (Vector2){0, 2};
+    block_locs[3][3][3] = (Vector2){1, 2};
+
+    // Purple I
+    // I1
+    block_locs[4][0][0] = (Vector2){0, 1};
+    block_locs[4][0][1] = (Vector2){1, 1};
+    block_locs[4][0][2] = (Vector2){2, 1};
+    block_locs[4][0][3] = (Vector2){3, 1};
+
+    // I2
+    block_locs[4][1][0] = (Vector2){2, 0};
+    block_locs[4][1][1] = (Vector2){2, 1};
+    block_locs[4][1][2] = (Vector2){2, 2};
+    block_locs[4][1][3] = (Vector2){2, 3};
+
+    // I3
+    block_locs[4][2][0] = (Vector2){0, 2};
+    block_locs[4][2][1] = (Vector2){1, 2};
+    block_locs[4][2][2] = (Vector2){2, 2};
+    block_locs[4][2][3] = (Vector2){3, 2};
+
+    // I4
+    block_locs[4][3][0] = (Vector2){1, 0};
+    block_locs[4][3][1] = (Vector2){1, 1};
+    block_locs[4][3][2] = (Vector2){1, 2};
+    block_locs[4][3][3] = (Vector2){1, 3};
+
+    // Red O (same cells in every orientation)
+    for (int r = 0; r < 4; r++) {
+        block_locs[5][r][0] = (Vector2){1, 0};
+        block_locs[5][r][1] = (Vector2){2, 0};
+        block_locs[5][r][2] = (Vector2){1, 1};
+        block_locs[5][r][3] = (Vector2){2, 1};
+    }
+
+    // Yellow S
+    // S1
+    block_locs[6][0][0] = (Vector2){1, 0};
+    block_locs[6][0][1] = (Vector2){2, 0};
+    block_locs[6][0][2] = (Vector2){0, 1};
+    block_locs[6][0][3] = (Vector2){1, 1};
+
+    // S2
+    block_locs[6][1][0] = (Vector2){1, 0};
+    block_locs[6][1][1] = (Vector2){1, 1};
+    block_locs[6][1][2] = (Vector2){2, 1};
+    block_locs[6][1][3] = (Vector2){2, 2};
+
+    // S3
+    block_locs[6][2][0] = (Vector2){1, 1};
+    block_locs[6][2][1] = (Vector2){2, 1};
+    block_locs[6][2][2] = (Vector2){0, 2};
+    block_locs[6][2][3] = (Vector2){1, 2};
+
+    // S4
+    block_locs[6][3][0] = (Vector2){0, 0};
+    block_locs[6][3][1] = (Vector2){0, 1};
+    block_locs[6][3][2] = (Vector2){1, 1};
+    block_locs[6][3][3] = (Vector2){1, 2};
 }
