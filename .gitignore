@@ -1,2 +1,8 @@
 build/
 .vscode/
+
+# Ignore assets that are not mine
+background/
+blocks/
+music/
+sound/

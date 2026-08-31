@@ -1,6 +1,7 @@
 #include "raylib.h"
 #include "raymath.h"
 #include <stdio.h>
+#include <string.h>
 
 typedef enum {
     NONE,
@@ -54,22 +55,32 @@ Texture2D blocks[7][5]; // 7 blocks with 4 rotations + single unit
 Orientation block_locs[7]; // 7 blocks, 4 orientations, 2 x/y coords
 int rotation = 0; // 0-3
 bool get_next = true;
+bool game_over = false;
 
 // For speed of block descent
 int frame_count = 0;
 const int move_frames = 20;
 
 // Game area is 20 deep, 10 across. Bottom is i = 0.
-Tetromino spaces[20][10] = {0};
+Tetromino spaces[25][10] = {0};
 Block_Data curr;
 Vector2 curr_loc;
 int coords[4][2];
 Tetromino next = 0;
 const Vector2 spawn_loc = {(right_box + left_box) / 2 - block_size, top_box - block_size};
 
+// Sounds and music
+Music music;
+Sound land_piece;
+Sound clear_line;
+Sound game_over_sfx;
+
 // Forward declarations
 void MakeGUI();
 void InitBlockTextures();
+void UnloadBlockTextures();
+void LoadSounds();
+void UnloadSounds();
 void InitBlockLocs();
 void PickNextBlock();
 void CheckSpawnNextBlock();
@@ -79,17 +90,22 @@ void CheckDestroyRows();
 void KeyPressCheck();
 void ConsiderMove();
 bool CheckCollision(Vector2 proposed, int new_rotation);
+void GameOver();
 void PixelsToCoords(Vector2 current, Vector2 *unit_offsets);
 
 int main(void) {
     InitWindow(screenWidth, screenHeight, "Tetris");
     SetTargetFPS(fps);
+    InitAudioDevice();
     InitBlockTextures();
+    LoadSounds();
     InitBlockLocs();
     PickNextBlock();
+    PlayMusicStream(music);
 
     while (!WindowShouldClose()) {
 
+        UpdateMusicStream(music);
         CheckSpawnNextBlock();
         KeyPressCheck();
 
@@ -107,7 +123,13 @@ int main(void) {
         frame_count++;
 
         CheckDestroyRows();
+
+        GameOver();
     }
+
+    UnloadSounds();
+    UnloadBlockTextures();
+    CloseAudioDevice();
 
     CloseWindow();
     return 0;
@@ -118,7 +140,6 @@ void PickNextBlock() {
 }
 
 void CheckSpawnNextBlock() {
-    // TODO: Add collision logic (i.e. game over)
     if (get_next) {
         rotation = 0;
         curr.texture = &blocks[next][rotation];
@@ -175,20 +196,23 @@ void CheckDestroyRows() {
         }
         if (populated) {
             score++;
+            PlaySound(clear_line);
             for (int k = 0; k < 10; ++k) {
                 spaces[i][k] = NONE;
                 BeginDrawing();
+                    UpdateMusicStream(music);
                     ClearBackground(BLACK);
                     MakeGUI();
                     DrawExisting();
                 EndDrawing();
                 WaitTime(0.05);
             }
-            for (int l = i; l < 19; ++l) {
+            for (int l = i; l < 20; ++l) {
                 for (int m = 0; m < 10; ++m) {
                     spaces[l][m] = spaces[l + 1][m];
                 }
                 BeginDrawing();
+                    UpdateMusicStream(music);
                     ClearBackground(BLACK);
                     MakeGUI();
                     DrawExisting();
@@ -221,7 +245,6 @@ void KeyPressCheck() {
 
 void ConsiderMove(Move move) {
 
-    // TODO: Add collision logic
     switch (move) {
         case LEFT:
             if (CheckCollision(Vector2Add(curr_loc, vecL), rotation)) {
@@ -241,10 +264,16 @@ void ConsiderMove(Move move) {
         else {
             PixelsToCoords(curr_loc, block_locs[curr.type][rotation]);
             for (int i = 0; i < 4; ++i) {
+                // Check if we're above top of play area
+                if (coords[i][1] >= 20) {
+                    game_over = true;
+                    continue;
+                }
                 spaces[coords[i][1]][coords[i][0]] = curr.type + 1;
             }
             frame_count = 0;
             get_next = true;
+            PlaySound(land_piece);
         }
         break;
         case ROTATE:
@@ -278,6 +307,37 @@ void PixelsToCoords(Vector2 current, Vector2 *unit_offsets) {
         float py = current.y + unit_offsets[i].y * block_size;
         coords[i][0] = (int)(px - left_box) / block_size;
         coords[i][1] = (int)(py - 668) / -block_size;
+    }
+}
+
+void GameOver() {
+    if (!game_over) return;
+
+    StopMusicStream(music);
+    PlaySound(game_over_sfx);
+    int game_over_ctr = 0;
+    while (game_over && !WindowShouldClose()) {
+        BeginDrawing();
+            ClearBackground(BLACK);
+            MakeGUI();
+            DrawCurrent();
+            DrawExisting();
+            if (game_over_ctr < 15) {
+                DrawText("GAME OVER", 250, 720, 30, WHITE);
+                DrawText("PRESS SPACE TO PLAY AGAIN", 175, 760, 20, WHITE);
+            }
+
+        EndDrawing();
+        game_over_ctr = (game_over_ctr + 1) % 30;
+
+        if (IsKeyPressed(KEY_SPACE)) {
+            score = 0;
+            game_over = false;
+            frame_count = 0;
+            PickNextBlock();
+            memset(spaces, 0, 25 * 10 * sizeof(Tetromino));
+            PlayMusicStream(music);
+        }
     }
 }
 
@@ -363,6 +423,28 @@ void InitBlockTextures() {
     blocks[6][2] = LoadTexture("blocks/yellow_block/yellow_S3.png");
     blocks[6][3] = LoadTexture("blocks/yellow_block/yellow_S4.png");
     blocks[6][4] = LoadTexture("blocks/yellow_block/yellow_block.png");
+}
+
+void UnloadBlockTextures() {
+    for (int i = 0; i < 7; ++i) {
+        for (int j = 0; j < 5; ++j) {
+            UnloadTexture(blocks[i][j]);
+        }
+    }
+}
+
+void LoadSounds() {
+    music = LoadMusicStream("music/Type B.mp3");
+    land_piece = LoadSound("sound/drop.mp3");
+    clear_line = LoadSound("sound/line_clear.mp3");
+    game_over_sfx = LoadSound("sound/game_over.mp3");
+}
+
+void UnloadSounds() {
+    UnloadMusicStream(music);
+    UnloadSound(land_piece);
+    UnloadSound(clear_line);
+    UnloadSound(game_over_sfx);
 }
 
 void InitBlockLocs() {

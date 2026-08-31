@@ -19,3 +19,18 @@ add_executable(${PROJECT_NAME}
 target_include_directories(${PROJECT_NAME} PRIVATE "${RAYLIB_SRC}")
 target_link_directories(${PROJECT_NAME} PRIVATE "${RAYLIB_ROOT}/lib")
 target_link_libraries(${PROJECT_NAME} PRIVATE raylib opengl32 gdi32 winmm)
+
+# Build as a Windows GUI app (not console) so no console window opens alongside the game.
+if(WIN32 AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    target_link_options(${PROJECT_NAME} PRIVATE -mwindows)
+endif()
+
+# The game loads assets via paths relative to its working directory
+# (e.g. "blocks/blue_block/blue_T1.png"), so copy them next to the .exe.
+foreach(ASSET_DIR blocks music sound)
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/${ASSET_DIR}"
+            "$<TARGET_FILE_DIR:${PROJECT_NAME}>/${ASSET_DIR}"
+    )
+endforeach()
