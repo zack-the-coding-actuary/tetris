@@ -9,6 +9,10 @@ I made a basic Tetris game to start learning 2D game development using the rayli
 - **Down arrow key** - Move piece down one time
 - **Spacebar** - Move piece down quickly
 
+# AI Disclosure
+
+Claude was used to generate the CMakeLists.txt file and provide debugging support. All code and architecture in main.c was written from scratch.
+
 # Credits
 
 Art and sound assets by Hat Tap Games via itch.io: https://hat-tap.itch.io/tetris-asset-pack
