@@ -2,6 +2,7 @@
 #include "raymath.h"
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 typedef enum {
     NONE,
@@ -32,6 +33,13 @@ typedef Vector2 Orientation[4][4];
 // Configs
 const int screenWidth = 720;
 const int screenHeight = 800;
+// The game renders to a fixed screenWidth x screenHeight texture, which is
+// scaled to fit and centered in whatever the real window / display size is.
+// These are only the size of the window in windowed mode; fullscreen uses the
+// display's native resolution (Steam Deck: 1280x800).
+const int windowWidth = 1280;
+const int windowHeight = 800;
+RenderTexture2D target;
 const int fps = 30;
 
 const int block_size = 32; // do not change unless changing sprites
@@ -56,6 +64,7 @@ Orientation block_locs[7]; // 7 blocks, 4 orientations, 2 x/y coords
 int rotation = 0; // 0-3
 bool get_next = true;
 bool game_over = false;
+bool quit_requested = false; // set by the gamepad Select button
 
 // For speed of block descent
 int frame_count = 0;
@@ -67,6 +76,8 @@ Block_Data curr;
 Vector2 curr_loc;
 int coords[4][2];
 Tetromino next = 0;
+int *sequence = NULL;
+int sequence_idx = 0;
 const Vector2 spawn_loc = {(right_box + left_box) / 2 - block_size, top_box - block_size};
 
 // Sounds and music
@@ -91,10 +102,42 @@ void KeyPressCheck();
 void ConsiderMove();
 bool CheckCollision(Vector2 proposed, int new_rotation);
 void GameOver();
+void Pause();
 void PixelsToCoords(Vector2 current, Vector2 *unit_offsets);
 
-int main(void) {
-    InitWindow(screenWidth, screenHeight, "Tetris");
+void BeginFrame() {
+    BeginTextureMode(target);
+}
+
+void EndFrame() {
+    EndTextureMode();
+    BeginDrawing();
+        ClearBackground(BLACK);
+        // Negative height: render textures are flipped vertically
+        Rectangle src = {0, 0, screenWidth, -screenHeight};
+
+        // Scale to fit the real window size (letterboxed), then center
+        float scale = fminf((float)GetScreenWidth() / screenWidth, (float)GetScreenHeight() / screenHeight);
+        float w = screenWidth * scale;
+        float h = screenHeight * scale;
+        Rectangle dest = {(GetScreenWidth() - w) / 2, (GetScreenHeight() - h) / 2, w, h};
+        DrawTexturePro(target.texture, src, dest, (Vector2){0, 0}, 0.0f, WHITE);
+    EndDrawing();
+}
+
+int main(int argc, char **argv) {
+    // Steam Deck (Game Mode) needs a real fullscreen window: launch with -fullscreen
+    bool fullscreen = false;
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "-fullscreen") == 0) fullscreen = true;
+    }
+
+    // A 0x0 window makes raylib go fullscreen at the display's native size
+    if (fullscreen) InitWindow(0, 0, "Tetris");
+    else InitWindow(windowWidth, windowHeight, "Tetris");
+    if (fullscreen) SetWindowFocused();
+    target = LoadRenderTexture(screenWidth, screenHeight);
+    SetTextureFilter(target.texture, TEXTURE_FILTER_BILINEAR); // smooth when scaled
     SetTargetFPS(fps);
     InitAudioDevice();
     InitBlockTextures();
@@ -103,20 +146,21 @@ int main(void) {
     PickNextBlock();
     PlayMusicStream(music);
 
-    while (!WindowShouldClose()) {
+    while (!WindowShouldClose() && !quit_requested) {
 
         UpdateMusicStream(music);
         CheckSpawnNextBlock();
+        Pause();
         KeyPressCheck();
 
-        BeginDrawing();
+        BeginFrame();
 
             ClearBackground(BLACK);
             MakeGUI();
             DrawCurrent();
             DrawExisting();
 
-        EndDrawing();
+        EndFrame();
 
         // Frame counter mechanics / auto move down
         if (frame_count == move_frames) ConsiderMove(DOWN); // Change this to be specific to moving down
@@ -127,16 +171,27 @@ int main(void) {
         GameOver();
     }
 
+    if (sequence != NULL) UnloadRandomSequence(sequence);
     UnloadSounds();
     UnloadBlockTextures();
+    UnloadRenderTexture(target);
     CloseAudioDevice();
 
     CloseWindow();
     return 0;
 }
 
+// Draws from a shuffled "bag" of all 7 pieces, refilling once it's exhausted
 void PickNextBlock() {
-    next = GetRandomValue(0,6);
+    if (sequence == NULL) {
+        sequence = LoadRandomSequence(7, 0, 6);
+        sequence_idx = 0;
+    }
+    next = sequence[sequence_idx++];
+    if (sequence_idx >= 7) {
+        UnloadRandomSequence(sequence);
+        sequence = NULL;
+    }
 }
 
 void CheckSpawnNextBlock() {
@@ -199,24 +254,24 @@ void CheckDestroyRows() {
             PlaySound(clear_line);
             for (int k = 0; k < 10; ++k) {
                 spaces[i][k] = NONE;
-                BeginDrawing();
+                BeginFrame();
                     UpdateMusicStream(music);
                     ClearBackground(BLACK);
                     MakeGUI();
                     DrawExisting();
-                EndDrawing();
+                EndFrame();
                 WaitTime(0.05);
             }
             for (int l = i; l < 20; ++l) {
                 for (int m = 0; m < 10; ++m) {
                     spaces[l][m] = spaces[l + 1][m];
                 }
-                BeginDrawing();
+                BeginFrame();
                     UpdateMusicStream(music);
                     ClearBackground(BLACK);
                     MakeGUI();
                     DrawExisting();
-                EndDrawing();
+                EndFrame();
                 WaitTime(0.05);
             }
             i--;
@@ -225,20 +280,37 @@ void CheckDestroyRows() {
     }
 }
 
+// Keyboard or gamepad 0 (the Steam Deck's controls show up as a gamepad)
+static bool InputPressed(int key, int button) {
+    return IsKeyPressed(key) || (IsGamepadAvailable(0) && IsGamepadButtonPressed(0, button));
+}
+
+static bool InputDown(int key, int button) {
+    return IsKeyDown(key) || (IsGamepadAvailable(0) && IsGamepadButtonDown(0, button));
+}
+
 void KeyPressCheck() {
-    if (IsKeyPressed(KEY_LEFT)) {
+    // Select / View button quits immediately
+    if (IsGamepadAvailable(0) && IsGamepadButtonPressed(0, GAMEPAD_BUTTON_MIDDLE_LEFT)) {
+        quit_requested = true;
+        return;
+    }
+    if (InputPressed(KEY_LEFT, GAMEPAD_BUTTON_LEFT_FACE_LEFT)) {
         ConsiderMove(LEFT);
     }
-    if (IsKeyPressed(KEY_RIGHT)) {
+    if (InputPressed(KEY_RIGHT, GAMEPAD_BUTTON_LEFT_FACE_RIGHT)) {
         ConsiderMove(RIGHT);
     }
-    if (IsKeyPressed(KEY_DOWN)) {
+    if (InputPressed(KEY_DOWN, GAMEPAD_BUTTON_LEFT_FACE_DOWN)) {
         ConsiderMove(DOWN);
     }
-    if (IsKeyPressed(KEY_UP)) {
+    // D-pad up or A rotates
+    if (InputPressed(KEY_UP, GAMEPAD_BUTTON_LEFT_FACE_UP) ||
+        (IsGamepadAvailable(0) && IsGamepadButtonPressed(0, GAMEPAD_BUTTON_RIGHT_FACE_DOWN))) {
         ConsiderMove(ROTATE);
     }
-    if (IsKeyDown(KEY_SPACE)) {
+    // Hold space / B to fast drop
+    if (InputDown(KEY_SPACE, GAMEPAD_BUTTON_RIGHT_FACE_RIGHT)) {
         ConsiderMove(DOWN);
     }
 }
@@ -310,30 +382,65 @@ void PixelsToCoords(Vector2 current, Vector2 *unit_offsets) {
     }
 }
 
+static bool PausePressed() {
+    return InputPressed(KEY_ENTER, GAMEPAD_BUTTON_MIDDLE_RIGHT);
+}
+
+void Pause() {
+    if (!PausePressed()) return;
+
+    PauseMusicStream(music);
+    bool paused = true;
+    while (paused && !WindowShouldClose() && !quit_requested) {
+        BeginFrame();
+            ClearBackground(BLACK);
+            MakeGUI();
+            DrawCurrent();
+            DrawExisting();
+            DrawText("PAUSED", 280, 720, 30, WHITE);
+            DrawText("PRESS ENTER / START TO RESUME", 150, 760, 20, WHITE);
+        EndFrame();
+
+        if (IsGamepadAvailable(0) && IsGamepadButtonPressed(0, GAMEPAD_BUTTON_MIDDLE_LEFT)) {
+            quit_requested = true;
+        }
+        if (PausePressed()) paused = false;
+    }
+    ResumeMusicStream(music);
+}
+
 void GameOver() {
     if (!game_over) return;
 
     StopMusicStream(music);
     PlaySound(game_over_sfx);
     int game_over_ctr = 0;
-    while (game_over && !WindowShouldClose()) {
-        BeginDrawing();
+    while (game_over && !WindowShouldClose() && !quit_requested) {
+        BeginFrame();
             ClearBackground(BLACK);
             MakeGUI();
             DrawCurrent();
             DrawExisting();
             if (game_over_ctr < 15) {
                 DrawText("GAME OVER", 250, 720, 30, WHITE);
-                DrawText("PRESS SPACE TO PLAY AGAIN", 175, 760, 20, WHITE);
+                DrawText("PRESS SPACE / A TO PLAY AGAIN", 150, 760, 20, WHITE);
             }
 
-        EndDrawing();
+        EndFrame();
         game_over_ctr = (game_over_ctr + 1) % 30;
 
-        if (IsKeyPressed(KEY_SPACE)) {
+        if (IsGamepadAvailable(0) && IsGamepadButtonPressed(0, GAMEPAD_BUTTON_MIDDLE_LEFT)) {
+            quit_requested = true;
+        }
+        if (InputPressed(KEY_SPACE, GAMEPAD_BUTTON_RIGHT_FACE_DOWN) ||
+            (IsGamepadAvailable(0) && IsGamepadButtonPressed(0, GAMEPAD_BUTTON_MIDDLE_RIGHT))) {
             score = 0;
             game_over = false;
             frame_count = 0;
+            if (sequence != NULL) {
+                UnloadRandomSequence(sequence);
+                sequence = NULL;
+            }
             PickNextBlock();
             memset(spaces, 0, 25 * 10 * sizeof(Tetromino));
             PlayMusicStream(music);

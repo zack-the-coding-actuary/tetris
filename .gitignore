@@ -7,3 +7,9 @@ blocks/
 music/
 sound/
 UI/
+
+# Ignore mds for personal configs
+*.md
+
+# Unused header file
+rl_cleanup.h
